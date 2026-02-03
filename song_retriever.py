@@ -47,6 +47,7 @@ RETRY_SLEEP_SECONDS = 3
 REQUEST_TIMEOUT_SECONDS = 30
 DEBUG = os.getenv("DEBUG", "0").strip() == "1"
 HASH_CACHE_FILENAME = ".audio_hashes.txt"
+HASH_CACHE_STATE = None
 
 INSTRUMENTAL_KEYWORDS = [
     "instrumental",
@@ -246,7 +247,7 @@ def hash_file(path):
 def build_audio_hash_index(base_dir):
     hashes = set()
     if not os.path.isdir(base_dir):
-        return hashes
+        return hashes, None, {}
     debug(f"Building audio hash index for: {base_dir}")
     cache_path = os.path.join(base_dir, HASH_CACHE_FILENAME)
     cache = load_hash_cache(cache_path, base_dir)
@@ -275,7 +276,7 @@ def build_audio_hash_index(base_dir):
             new_cache[rel_path] = (file_hash, stat.st_size, stat.st_mtime)
     save_hash_cache(cache_path, new_cache)
     debug(f"Indexed {len(hashes)} audio files")
-    return hashes
+    return hashes, cache_path, new_cache
 
 
 def load_hash_cache(cache_path, base_dir):
@@ -311,6 +312,38 @@ def save_hash_cache(cache_path, cache):
                 f.write(f"{file_hash}\t{rel_path}\t{size}\t{mtime}\n")
     except OSError as exc:
         debug(f"Failed to write hash cache: {exc}")
+
+
+def set_hash_cache_state(base_dir, cache_path, entries):
+    global HASH_CACHE_STATE
+    if not cache_path:
+        HASH_CACHE_STATE = None
+        return
+    HASH_CACHE_STATE = {
+        "base_dir": base_dir,
+        "path": cache_path,
+        "entries": entries,
+    }
+
+
+def update_hash_cache(file_path, file_hash):
+    if not HASH_CACHE_STATE:
+        return
+    base_dir = HASH_CACHE_STATE["base_dir"]
+    cache_path = HASH_CACHE_STATE["path"]
+    entries = HASH_CACHE_STATE["entries"]
+    try:
+        rel_path = os.path.relpath(file_path, base_dir)
+        stat = os.stat(file_path)
+    except OSError as exc:
+        debug(f"Failed to stat for cache update: {exc}")
+        return
+    entries[rel_path] = (file_hash, stat.st_size, stat.st_mtime)
+    try:
+        with open(cache_path, "a", encoding="utf-8") as f:
+            f.write(f"{file_hash}\t{rel_path}\t{stat.st_size}\t{stat.st_mtime}\n")
+    except OSError as exc:
+        debug(f"Failed to append to hash cache: {exc}")
 
 
 def spotify_call(func, *args, **kwargs):
@@ -356,6 +389,7 @@ def download_audio(search_query, out_base_path, known_hashes):
             pass
         return None
     known_hashes.add(file_hash)
+    update_hash_cache(downloaded, file_hash)
     return downloaded
 
 
@@ -673,7 +707,8 @@ def main():
     base_output_folder = get_output_folder()
     debug(f"Output folder: {base_output_folder}")
     os.makedirs(base_output_folder, exist_ok=True)
-    known_hashes = build_audio_hash_index(base_output_folder)
+    known_hashes, cache_path, cache_entries = build_audio_hash_index(base_output_folder)
+    set_hash_cache_state(base_output_folder, cache_path, cache_entries)
     mode, input_path = resolve_input_file()
     if not input_path:
         print("No songs.txt or artist.txt found in the script folder.")
