@@ -4,6 +4,7 @@ import ast
 import shutil
 import requests
 import hashlib
+import time
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import dotenv
@@ -39,6 +40,12 @@ def get_output_folder():
 
 AUDIO_EXTS = (".mp3", ".m4a", ".webm", ".opus")
 
+DOWNLOAD_ATTEMPTS = 3
+IMAGE_DOWNLOAD_ATTEMPTS = 3
+SPOTIFY_ATTEMPTS = 3
+RETRY_SLEEP_SECONDS = 3
+REQUEST_TIMEOUT_SECONDS = 30
+
 INSTRUMENTAL_KEYWORDS = [
     "instrumental",
     "karaoke",
@@ -51,10 +58,18 @@ def download_image(url, path):
     """Download the album image at roughly 300x300."""
     if not url:
         return
-    r = requests.get(url, timeout=30)
-    if r.status_code == 200:
-        with open(path, "wb") as f:
-            f.write(r.content)
+    for attempt in range(1, IMAGE_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            r = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+            if r.status_code == 200:
+                with open(path, "wb") as f:
+                    f.write(r.content)
+                return
+            print(f"Image download failed (status {r.status_code}): {url}")
+        except requests.RequestException as exc:
+            print(f"Image download error (attempt {attempt}): {exc}")
+        if attempt < IMAGE_DOWNLOAD_ATTEMPTS:
+            time.sleep(RETRY_SLEEP_SECONDS)
 
 
 def sanitize_filename(name):
@@ -182,6 +197,11 @@ def build_ydl_opts(out_base_path):
         "noplaylist": True,
         "default_search": "ytsearch1",
         "match_filter": yt_match_filter,
+        "retries": 5,
+        "fragment_retries": 5,
+        "file_access_retries": 3,
+        "socket_timeout": REQUEST_TIMEOUT_SECONDS,
+        "retry_sleep": RETRY_SLEEP_SECONDS,
         "outtmpl": f"{out_base_path}.%(ext)s",
         "postprocessors": [
             {
@@ -229,10 +249,30 @@ def build_audio_hash_index(base_dir):
     return hashes
 
 
+def spotify_call(func, *args, **kwargs):
+    for attempt in range(1, SPOTIFY_ATTEMPTS + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            print(f"Spotify request failed (attempt {attempt}): {exc}")
+            if attempt < SPOTIFY_ATTEMPTS:
+                time.sleep(RETRY_SLEEP_SECONDS)
+    return None
+
+
 def download_audio(search_query, out_base_path, known_hashes):
     ydl_opts = build_ydl_opts(out_base_path)
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([search_query])
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([search_query])
+            break
+        except Exception as exc:
+            print(f"Audio download error (attempt {attempt}): {exc}")
+            if attempt < DOWNLOAD_ATTEMPTS:
+                time.sleep(RETRY_SLEEP_SECONDS)
+            else:
+                return None
     downloaded = find_downloaded_file(out_base_path)
     if not downloaded:
         return None
@@ -252,7 +292,10 @@ def download_audio(search_query, out_base_path, known_hashes):
 
 
 def get_artist(artist_name):
-    results = sp.search(q=f"artist:{artist_name}", type="artist", limit=1)
+    results = spotify_call(sp.search, q=f"artist:{artist_name}", type="artist", limit=1)
+    if not results:
+        print(f"Spotify search failed for artist '{artist_name}'")
+        return None
     items = results.get("artists", {}).get("items", [])
     if not items:
         print(f"No artist found for '{artist_name}'")
@@ -265,9 +308,16 @@ def get_all_albums(artist_id):
     seen = set()
     offset = 0
     while True:
-        response = sp.artist_albums(
-            artist_id, album_type="album,single", country="IN", limit=50, offset=offset
+        response = spotify_call(
+            sp.artist_albums,
+            artist_id,
+            album_type="album,single",
+            country="IN",
+            limit=50,
+            offset=offset,
         )
+        if not response:
+            break
         items = response.get("items", [])
         if not items:
             break
@@ -287,7 +337,9 @@ def get_album_tracks(album_id):
     tracks = []
     offset = 0
     while True:
-        response = sp.album_tracks(album_id, limit=50, offset=offset)
+        response = spotify_call(sp.album_tracks, album_id, limit=50, offset=offset)
+        if not response:
+            break
         items = response.get("items", [])
         if not items:
             break
@@ -401,9 +453,11 @@ def search_albums_by_name(album_name):
     seen = set()
     offset = 0
     while True:
-        results = sp.search(
-            q=f"album:{album_name}", type="album", limit=50, offset=offset
+        results = spotify_call(
+            sp.search, q=f"album:{album_name}", type="album", limit=50, offset=offset
         )
+        if not results:
+            break
         items = results.get("albums", {}).get("items", [])
         if not items:
             break
