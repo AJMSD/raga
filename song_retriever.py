@@ -45,6 +45,8 @@ IMAGE_DOWNLOAD_ATTEMPTS = 3
 SPOTIFY_ATTEMPTS = 3
 RETRY_SLEEP_SECONDS = 3
 REQUEST_TIMEOUT_SECONDS = 30
+DEBUG = os.getenv("DEBUG", "0").strip() == "1"
+HASH_CACHE_FILENAME = ".audio_hashes.txt"
 
 INSTRUMENTAL_KEYWORDS = [
     "instrumental",
@@ -54,16 +56,23 @@ INSTRUMENTAL_KEYWORDS = [
 ]
 
 
+def debug(message):
+    if DEBUG:
+        print(f"[DEBUG] {message}")
+
+
 def download_image(url, path):
     """Download the album image at roughly 300x300."""
     if not url:
         return
+    debug(f"Downloading image: {url} -> {path}")
     for attempt in range(1, IMAGE_DOWNLOAD_ATTEMPTS + 1):
         try:
             r = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
             if r.status_code == 200:
                 with open(path, "wb") as f:
                     f.write(r.content)
+                debug(f"Image saved: {path}")
                 return
             print(f"Image download failed (status {r.status_code}): {url}")
         except requests.RequestException as exc:
@@ -97,6 +106,7 @@ def parse_list_file(path, allow_commas_in_items):
     """Parse a list from a text file."""
     if not os.path.exists(path):
         return []
+    debug(f"Parsing list file: {path}")
     content = ""
     with open(path, "r", encoding="utf-8") as f:
         content = f.read().strip()
@@ -191,6 +201,7 @@ def unique_file_path(path):
 
 
 def build_ydl_opts(out_base_path):
+    debug(f"Building yt-dlp options for: {out_base_path}")
     return {
         "format": "bestaudio/best",
         "quiet": False,
@@ -236,22 +247,76 @@ def build_audio_hash_index(base_dir):
     hashes = set()
     if not os.path.isdir(base_dir):
         return hashes
+    debug(f"Building audio hash index for: {base_dir}")
+    cache_path = os.path.join(base_dir, HASH_CACHE_FILENAME)
+    cache = load_hash_cache(cache_path, base_dir)
+    new_cache = {}
     for root, _, files in os.walk(base_dir):
         for filename in files:
+            if filename == HASH_CACHE_FILENAME:
+                continue
             if not filename.lower().endswith(AUDIO_EXTS):
                 continue
             path = os.path.join(root, filename)
+            rel_path = os.path.relpath(path, base_dir)
             try:
-                file_hash = hash_file(path)
+                stat = os.stat(path)
             except OSError:
                 continue
+            cached = cache.get(rel_path)
+            if cached and cached[1] == stat.st_size and cached[2] == stat.st_mtime:
+                file_hash = cached[0]
+            else:
+                try:
+                    file_hash = hash_file(path)
+                except OSError:
+                    continue
             hashes.add(file_hash)
+            new_cache[rel_path] = (file_hash, stat.st_size, stat.st_mtime)
+    save_hash_cache(cache_path, new_cache)
+    debug(f"Indexed {len(hashes)} audio files")
     return hashes
+
+
+def load_hash_cache(cache_path, base_dir):
+    cache = {}
+    if not os.path.exists(cache_path):
+        return cache
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("\t", 3)
+                if len(parts) != 4:
+                    continue
+                file_hash, rel_path, size_text, mtime_text = parts
+                try:
+                    size = int(size_text)
+                    mtime = float(mtime_text)
+                except ValueError:
+                    continue
+                cache[rel_path] = (file_hash, size, mtime)
+    except OSError as exc:
+        debug(f"Failed to read hash cache: {exc}")
+    return cache
+
+
+def save_hash_cache(cache_path, cache):
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            for rel_path in sorted(cache.keys()):
+                file_hash, size, mtime = cache[rel_path]
+                f.write(f"{file_hash}\t{rel_path}\t{size}\t{mtime}\n")
+    except OSError as exc:
+        debug(f"Failed to write hash cache: {exc}")
 
 
 def spotify_call(func, *args, **kwargs):
     for attempt in range(1, SPOTIFY_ATTEMPTS + 1):
         try:
+            debug(f"Spotify call attempt {attempt}: {getattr(func, '__name__', 'call')}")
             return func(*args, **kwargs)
         except Exception as exc:
             print(f"Spotify request failed (attempt {attempt}): {exc}")
@@ -262,6 +327,7 @@ def spotify_call(func, *args, **kwargs):
 
 def download_audio(search_query, out_base_path, known_hashes):
     ydl_opts = build_ydl_opts(out_base_path)
+    debug(f"Audio search: {search_query}")
     for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -275,7 +341,9 @@ def download_audio(search_query, out_base_path, known_hashes):
                 return None
     downloaded = find_downloaded_file(out_base_path)
     if not downloaded:
+        debug("No downloaded file found after yt-dlp run.")
         return None
+    debug(f"Downloaded file: {downloaded}")
     try:
         file_hash = hash_file(downloaded)
     except OSError:
@@ -307,6 +375,7 @@ def get_all_albums(artist_id):
     albums = []
     seen = set()
     offset = 0
+    debug(f"Fetching albums for artist ID: {artist_id}")
     while True:
         response = spotify_call(
             sp.artist_albums,
@@ -336,6 +405,7 @@ def get_all_albums(artist_id):
 def get_album_tracks(album_id):
     tracks = []
     offset = 0
+    debug(f"Fetching tracks for album ID: {album_id}")
     while True:
         response = spotify_call(sp.album_tracks, album_id, limit=50, offset=offset)
         if not response:
@@ -354,6 +424,7 @@ def download_album_tracks(artist_display_name, album, known_hashes, base_output_
     album_name = sanitize_filename(album.get("name", "Unknown Album"))
     album_folder = unique_folder_path(base_output_folder, album_name)
     os.makedirs(album_folder, exist_ok=True)
+    debug(f"Album folder: {album_folder}")
 
     images = album.get("images") or []
     if images:
@@ -366,6 +437,7 @@ def download_album_tracks(artist_display_name, album, known_hashes, base_output_
     if not tracks:
         print(f"No tracks found for album: {album_name}")
         return
+    debug(f"Track count for album '{album_name}': {len(tracks)}")
 
     for track in tracks:
         track_name = track.get("name") or ""
@@ -452,6 +524,7 @@ def search_albums_by_name(album_name):
     albums = []
     seen = set()
     offset = 0
+    debug(f"Searching albums by name: {album_name}")
     while True:
         results = spotify_call(
             sp.search, q=f"album:{album_name}", type="album", limit=50, offset=offset
@@ -478,6 +551,7 @@ def get_album_by_name(album_name, artist_name):
     if not items:
         print(f"No album found for '{album_name}'")
         return None
+    debug(f"Found {len(items)} album candidates for '{album_name}'")
     if artist_name:
         for album in items:
             if album_has_artist(album, artist_name):
@@ -582,18 +656,22 @@ def resolve_input_file():
     if os.path.exists(SONGS_FILE):
         if os.path.exists(ALBUMS_FILE) or os.path.exists(ARTISTS_FILE):
             print("Multiple input files found. Using songs.txt.")
+        debug(f"Resolved input file: {SONGS_FILE}")
         return "songs", SONGS_FILE
     if os.path.exists(ALBUMS_FILE):
         if os.path.exists(ARTISTS_FILE):
             print("Both album.txt and artist.txt found. Using album.txt.")
+        debug(f"Resolved input file: {ALBUMS_FILE}")
         return "albums", ALBUMS_FILE
     if os.path.exists(ARTISTS_FILE):
+        debug(f"Resolved input file: {ARTISTS_FILE}")
         return "artists", ARTISTS_FILE
     return None, None
 
 
 def main():
     base_output_folder = get_output_folder()
+    debug(f"Output folder: {base_output_folder}")
     os.makedirs(base_output_folder, exist_ok=True)
     known_hashes = build_audio_hash_index(base_output_folder)
     mode, input_path = resolve_input_file()

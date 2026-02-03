@@ -38,6 +38,13 @@ DESTINATION_FOLDER=C:/Music/DownloadedMusic
 Notes:
 - `DESTINATION_FOLDER` can be absolute or relative to the script folder.
 - If omitted, it defaults to `DownloadedMusic` inside the project folder.
+- Set `DEBUG=1` to enable verbose debug logging.
+
+## Caching
+
+To speed up deduplication, the script writes a hidden cache file named `.audio_hashes.txt` in the
+destination folder. It stores file hashes and timestamps so subsequent runs avoid re-hashing every file.
+Delete this file to force a full rebuild.
 
 ## Input files (pick one)
 
