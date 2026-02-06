@@ -61,11 +61,15 @@ Place **one** of these files next to `song_retriever.py`:
 [
   "After Hours, The Weeknd",
   "Random Access Memories, Daft Punk",
-  "1989"
+  "1989",
+  "4aawyAB9vmqN3uQ7FjRGTy",
+  "spotify:album:4aawyAB9vmqN3uQ7FjRGTy",
+  "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy"
 ]
 ```
 
-If an artist is provided, the script searches album results and picks the first album that includes that artist.
+You can use an album name, Spotify album ID, Spotify URI, or Spotify album URL.
+If an artist is provided with an album name or ID, the script validates that the album includes that artist.
 
 ### artist.txt
 ```txt

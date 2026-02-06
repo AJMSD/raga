@@ -5,6 +5,7 @@ import shutil
 import requests
 import hashlib
 import time
+import re
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import dotenv
@@ -537,6 +538,23 @@ def parse_album_entry(entry):
     return entry, ""
 
 
+def extract_spotify_album_id(text):
+    value = (text or "").strip()
+    if not value:
+        return ""
+
+    match = re.search(r"open\.spotify\.com/album/([A-Za-z0-9]+)", value, re.IGNORECASE)
+    if match:
+        value = match.group(1)
+    elif value.lower().startswith("spotify:album:"):
+        value = value.split(":", 2)[2]
+
+    value = value.split("?", 1)[0].split("/", 1)[0].strip()
+    if re.fullmatch(r"[A-Za-z0-9]{22}", value):
+        return value
+    return ""
+
+
 def album_has_artist(album, artist_name):
     if not artist_name:
         return True
@@ -595,6 +613,14 @@ def get_album_by_name(album_name, artist_name):
     return items[0]
 
 
+def get_album_by_id(album_id):
+    album = spotify_call(sp.album, album_id)
+    if not album:
+        print(f"No album found for album ID '{album_id}'")
+        return None
+    return album
+
+
 def album_artist_display(album, fallback):
     artists = album.get("artists") or []
     if artists:
@@ -613,7 +639,16 @@ def download_albums_from_list(entries, known_hashes, base_output_folder):
             print(f"Skipping instrumental album entry: {album_name}")
             continue
 
-        album = get_album_by_name(album_name, artist_name)
+        album_id = extract_spotify_album_id(album_name)
+        if album_id:
+            album = get_album_by_id(album_id)
+            if not album:
+                continue
+            if artist_name and not album_has_artist(album, artist_name):
+                print(f"Album ID '{album_id}' does not match artist '{artist_name}'")
+                continue
+        else:
+            album = get_album_by_name(album_name, artist_name)
         if not album:
             continue
 
