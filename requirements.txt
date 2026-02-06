@@ -2,3 +2,4 @@ python-dotenv
 requests
 spotipy
 yt-dlp
+mutagen
