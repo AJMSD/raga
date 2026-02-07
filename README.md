@@ -6,9 +6,9 @@ audio across the entire destination folder.
 
 ## What it does
 
-- **songs.txt**: downloads each song to the root destination folder; if an artist has 2+ songs, it groups
-  them into an artist folder and copies a placeholder image into that folder.
-- **album.txt**: downloads each album into its own folder with `album_art.jpg` and the album tracklist.
+- **songs.txt**: resolves each entry to a Spotify **single** and downloads it into its own folder with
+  `cover.jpg` and the single tracklist.
+- **album.txt**: downloads each album into its own folder with `cover.jpg` and the album tracklist.
 - **playlist.txt**: downloads each playlist into `Playlists/<Playlist Name>/` and writes `playlist.m3u`
   in track order for playlist-friendly library views (for example, Jellyfin).
 - **artist.txt**: downloads *all* albums and singles for each artist into per-album folders with art.
@@ -63,6 +63,7 @@ Place **one** of these files next to `song_retriever.py`:
 
 You can use a song name, Spotify track ID, Spotify URI, or Spotify track URL.
 If an artist is provided with a song name or ID, the script validates that the song includes that artist.
+Each song entry resolves to a single release and downloads in album-style layout.
 
 ### album.txt
 ```txt
@@ -116,16 +117,12 @@ python song_retriever.py
 ## Outputs
 
 - Albums: `DESTINATION_FOLDER/Album Name/`
-  - `album_art.jpg`
+  - `cover.jpg`
+  - `01 - Track Name.mp3`, ...
+- Singles (from `songs.txt`): `DESTINATION_FOLDER/Single Name/`
+  - `cover.jpg`
   - `01 - Track Name.mp3`, ...
 - Playlists: `DESTINATION_FOLDER/Playlists/Playlist Name/`
   - `cover.jpg`
   - `playlist.m3u`
   - `001 - Artist - Track.mp3`, ...
-- Songs: `DESTINATION_FOLDER/Artist Name/` (only when 2+ songs by same artist)
-  - `placeholder.jpg` is copied into that folder
-
-## Placeholder image
-
-Put `placeholder.jpg` next to `song_retriever.py` if you want it copied into artist folders for the
-songs-only mode.

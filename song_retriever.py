@@ -705,6 +705,111 @@ def get_track_by_id(track_id):
     return track
 
 
+def search_tracks_by_name(song_name, artist_name):
+    tracks = []
+    seen = set()
+    offset = 0
+    query = f"track:{song_name}"
+    if artist_name:
+        query += f" artist:{artist_name}"
+    debug(f"Searching tracks by query: {query}")
+    while True:
+        results = spotify_call(
+            sp.search,
+            q=query,
+            type="track",
+            limit=50,
+            offset=offset,
+        )
+        if not results:
+            break
+        items = results.get("tracks", {}).get("items", [])
+        if not items:
+            break
+        for track in items:
+            track_id = track.get("id")
+            if not track_id or track_id in seen:
+                continue
+            seen.add(track_id)
+            tracks.append(track)
+        if len(items) < 50:
+            break
+        offset += 50
+    return tracks
+
+
+def find_single_track_for_song(song_name, artist_name):
+    attempts = [artist_name] if artist_name else [""]
+    if artist_name:
+        attempts.append("")
+    seen = set()
+    for search_artist in attempts:
+        tracks = search_tracks_by_name(song_name, search_artist)
+        for track in tracks:
+            track_id = track.get("id")
+            if not track_id or track_id in seen:
+                continue
+            seen.add(track_id)
+            track_name = (track.get("name") or "").strip()
+            if not track_name or is_instrumental_text(track_name):
+                continue
+            if artist_name and not track_has_artist(track, artist_name):
+                continue
+            album = track.get("album") or {}
+            if album.get("album_type") == "single" and album.get("id"):
+                return track
+    if artist_name:
+        print(f"No single found for '{song_name}' with artist '{artist_name}'")
+    else:
+        print(f"No single found for '{song_name}'")
+    return None
+
+
+def resolve_song_to_single_album(song_name, artist_name):
+    track_id = extract_spotify_track_id(song_name)
+    source_track = None
+    if track_id:
+        source_track = get_track_by_id(track_id)
+        if not source_track:
+            return None, ""
+        if artist_name and not track_has_artist(source_track, artist_name):
+            print(f"Track ID '{track_id}' does not match artist '{artist_name}'")
+            return None, ""
+        track_name = (source_track.get("name") or "").strip() or song_name
+        if is_instrumental_text(track_name):
+            print(f"Skipping instrumental song entry: {track_name}")
+            return None, ""
+        source_album = source_track.get("album") or {}
+        if source_album.get("album_type") == "single" and source_album.get("id"):
+            album = get_album_by_id(source_album["id"])
+            artist_name_display = resolve_artist_display(source_track, artist_name)
+            return album, artist_name_display
+        track_artists = source_track.get("artists") or []
+        primary_artist = track_artists[0].get("name", "") if track_artists else ""
+        fallback_artist = artist_name or primary_artist
+        single_track = find_single_track_for_song(track_name, fallback_artist)
+        if not single_track:
+            print(f"No single release found for track ID '{track_id}'")
+            return None, ""
+    else:
+        if is_instrumental_text(song_name):
+            print(f"Skipping instrumental song entry: {song_name}")
+            return None, ""
+        single_track = find_single_track_for_song(song_name, artist_name)
+        if not single_track:
+            return None, ""
+
+    album_id = (single_track.get("album") or {}).get("id")
+    if not album_id:
+        print(f"No album ID found for single: {song_name}")
+        return None, ""
+    album = get_album_by_id(album_id)
+    if not album:
+        return None, ""
+    artist_name_display = resolve_artist_display(single_track, artist_name)
+    return album, artist_name_display
+
+
 def search_playlists_by_name(playlist_name):
     playlists = []
     seen = set()
@@ -917,47 +1022,23 @@ def download_albums_from_list(entries, known_hashes, base_output_folder):
 
 
 def download_songs_from_list(entries, known_hashes, base_output_folder):
-    downloaded = []
+    downloaded_single_ids = set()
     for entry in entries:
         song_name, artist_name = parse_song_entry(entry)
         if not song_name:
             continue
-        track_id = extract_spotify_track_id(song_name)
-        resolved_song_name = song_name
-        if track_id:
-            track = get_track_by_id(track_id)
-            if not track:
-                continue
-            if artist_name and not track_has_artist(track, artist_name):
-                print(f"Track ID '{track_id}' does not match artist '{artist_name}'")
-                continue
-            resolved_song_name = track.get("name", "").strip() or song_name
-            artist_name_display = resolve_artist_display(track, artist_name)
-        else:
-            artist_name_display = artist_name.strip() if artist_name else ""
-
-        if is_instrumental_text(resolved_song_name):
-            print(f"Skipping instrumental song entry: {resolved_song_name}")
+        album, artist_name_display = resolve_song_to_single_album(song_name, artist_name)
+        if not album:
+            continue
+        album_id = album.get("id")
+        if album_id and album_id in downloaded_single_ids:
+            print(f"Skipping duplicate single: {album.get('name', song_name)}")
             continue
 
-        search_query = (
-            f"{artist_name_display} - {resolved_song_name}"
-            if artist_name_display else resolved_song_name
-        )
-
-        artist_safe = sanitize_filename(artist_name_display) if artist_name_display else "Unknown"
-        song_safe = sanitize_filename(resolved_song_name)
-        base_filename = (
-            f"{artist_safe} - {song_safe}" if artist_name_display else song_safe
-        )
-        out_base = unique_base_path(os.path.join(base_output_folder, base_filename))
-
-        print(f"Downloading song: {resolved_song_name}")
-        downloaded_path = download_audio(search_query, out_base, known_hashes)
-        if downloaded_path:
-            downloaded.append((artist_name_display, downloaded_path))
-
-    return downloaded
+        print(f"Downloading single: {album.get('name', song_name)}")
+        download_album_tracks(artist_name_display, album, known_hashes, base_output_folder)
+        if album_id:
+            downloaded_single_ids.add(album_id)
 
 
 def copy_placeholder_image(dest_folder):
@@ -1034,8 +1115,7 @@ def main():
         if not entries:
             print("songs.txt is empty or could not be parsed.")
             return
-        downloaded = download_songs_from_list(entries, known_hashes, base_output_folder)
-        group_songs_into_artist_folders(downloaded, base_output_folder)
+        download_songs_from_list(entries, known_hashes, base_output_folder)
         return
     if mode == "albums":
         entries = parse_list_file(input_path, allow_commas_in_items=True)
