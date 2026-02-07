@@ -1,7 +1,7 @@
 # Raga
 
 A small utility that downloads music as MP3s using Spotify for metadata and yt-dlp for audio. It supports
-three input modes and keeps your library organized while skipping instrumental versions and deduplicating
+four input modes and keeps your library organized while skipping instrumental versions and deduplicating
 audio across the entire destination folder.
 
 ## What it does
@@ -9,6 +9,8 @@ audio across the entire destination folder.
 - **songs.txt**: downloads each song to the root destination folder; if an artist has 2+ songs, it groups
   them into an artist folder and copies a placeholder image into that folder.
 - **album.txt**: downloads each album into its own folder with `album_art.jpg` and the album tracklist.
+- **playlist.txt**: downloads each playlist into `Playlists/<Playlist Name>/` and writes `playlist.m3u`
+  in track order for playlist-friendly library views (for example, Jellyfin).
 - **artist.txt**: downloads *all* albums and singles for each artist into per-album folders with art.
 - **No instrumentals**: filters obvious instrumental/karaoke results by name.
 - **Deduplication**: skips any new download whose audio content already exists anywhere in the destination.
@@ -77,6 +79,20 @@ If an artist is provided with a song name or ID, the script validates that the s
 You can use an album name, Spotify album ID, Spotify URI, or Spotify album URL.
 If an artist is provided with an album name or ID, the script validates that the album includes that artist.
 
+### playlist.txt
+```txt
+[
+  "Lofi Beats",
+  "4rnleEAOdmFAbRcNCgZMpY",
+  "spotify:playlist:4rnleEAOdmFAbRcNCgZMpY",
+  "https://open.spotify.com/playlist/4rnleEAOdmFAbRcNCgZMpY",
+  "Lofi Beats, spotify"
+]
+```
+
+You can use a playlist name, Spotify playlist ID, Spotify URI, or Spotify playlist URL.
+If an owner is provided with a playlist name or ID, the script validates that owner by Spotify user ID or display name.
+
 ### artist.txt
 ```txt
 [
@@ -102,6 +118,10 @@ python song_retriever.py
 - Albums: `DESTINATION_FOLDER/Album Name/`
   - `album_art.jpg`
   - `01 - Track Name.mp3`, ...
+- Playlists: `DESTINATION_FOLDER/Playlists/Playlist Name/`
+  - `cover.jpg`
+  - `playlist.m3u`
+  - `001 - Artist - Track.mp3`, ...
 - Songs: `DESTINATION_FOLDER/Artist Name/` (only when 2+ songs by same artist)
   - `placeholder.jpg` is copied into that folder
 

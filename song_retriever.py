@@ -27,6 +27,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUTPUT_FOLDER = os.path.join(SCRIPT_DIR, "DownloadedMusic")
 SONGS_FILE = os.path.join(SCRIPT_DIR, "songs.txt")
 ALBUMS_FILE = os.path.join(SCRIPT_DIR, "album.txt")
+PLAYLISTS_FILE = os.path.join(SCRIPT_DIR, "playlist.txt")
 ARTISTS_FILE = os.path.join(SCRIPT_DIR, "artist.txt")
 PLACEHOLDER_IMAGE = os.path.join(SCRIPT_DIR, "placeholder.jpg")
 
@@ -571,12 +572,26 @@ def parse_album_entry(entry):
     return entry, ""
 
 
+def parse_playlist_entry(entry):
+    entry = entry.strip()
+    if not entry:
+        return "", ""
+    if "," in entry:
+        playlist, owner = entry.split(",", 1)
+        return playlist.strip(), owner.strip()
+    return entry, ""
+
+
 def extract_spotify_track_id(text):
     return extract_spotify_id(text, "track")
 
 
 def extract_spotify_album_id(text):
     return extract_spotify_id(text, "album")
+
+
+def extract_spotify_playlist_id(text):
+    return extract_spotify_id(text, "playlist")
 
 
 def extract_spotify_artist_id(text):
@@ -614,6 +629,22 @@ def track_has_artist(track, artist_name):
         candidate = normalize_name(name)
         if candidate == target or target in candidate:
             return True
+    return False
+
+
+def playlist_has_owner(playlist, owner_name):
+    if not owner_name:
+        return True
+    owner = playlist.get("owner") or {}
+    target = normalize_name(owner_name)
+    if not target:
+        return True
+    owner_id = normalize_name(owner.get("id", ""))
+    owner_display = normalize_name(owner.get("display_name", ""))
+    if owner_id and (owner_id == target or target in owner_id):
+        return True
+    if owner_display and (owner_display == target or target in owner_display):
+        return True
     return False
 
 
@@ -672,6 +703,181 @@ def get_track_by_id(track_id):
         print(f"No track found for track ID '{track_id}'")
         return None
     return track
+
+
+def search_playlists_by_name(playlist_name):
+    playlists = []
+    seen = set()
+    offset = 0
+    debug(f"Searching playlists by name: {playlist_name}")
+    while True:
+        results = spotify_call(
+            sp.search,
+            q=f"playlist:{playlist_name}",
+            type="playlist",
+            limit=50,
+            offset=offset,
+        )
+        if not results:
+            break
+        items = results.get("playlists", {}).get("items", [])
+        if not items:
+            break
+        for playlist in items:
+            playlist_id = playlist.get("id")
+            if not playlist_id or playlist_id in seen:
+                continue
+            seen.add(playlist_id)
+            playlists.append(playlist)
+        if len(items) < 50:
+            break
+        offset += 50
+    return playlists
+
+
+def get_playlist_by_name(playlist_name, owner_name):
+    items = search_playlists_by_name(playlist_name)
+    if not items:
+        print(f"No playlist found for '{playlist_name}'")
+        return None
+    debug(f"Found {len(items)} playlist candidates for '{playlist_name}'")
+    if owner_name:
+        for playlist in items:
+            if playlist_has_owner(playlist, owner_name):
+                return playlist
+        print(
+            f"No playlist found for '{playlist_name}' with owner '{owner_name}'"
+        )
+        return None
+    return items[0]
+
+
+def get_playlist_by_id(playlist_id):
+    playlist = spotify_call(sp.playlist, playlist_id)
+    if not playlist:
+        print(f"No playlist found for playlist ID '{playlist_id}'")
+        return None
+    return playlist
+
+
+def get_playlist_tracks(playlist_id):
+    tracks = []
+    offset = 0
+    debug(f"Fetching tracks for playlist ID: {playlist_id}")
+    while True:
+        response = spotify_call(
+            sp.playlist_items,
+            playlist_id,
+            additional_types=("track",),
+            limit=100,
+            offset=offset,
+        )
+        if not response:
+            break
+        items = response.get("items", [])
+        if not items:
+            break
+        for item in items:
+            track = item.get("track") or {}
+            if track.get("type") != "track":
+                continue
+            if not track.get("id"):
+                continue
+            tracks.append(track)
+        if len(items) < 100:
+            break
+        offset += 100
+    return tracks
+
+
+def write_playlist_m3u(playlist_folder, entries):
+    if not entries:
+        return
+    playlist_path = os.path.join(playlist_folder, "playlist.m3u")
+    try:
+        with open(playlist_path, "w", encoding="utf-8") as f:
+            f.write("#EXTM3U\n")
+            for title, rel_path in entries:
+                f.write(f"#EXTINF:-1,{title}\n")
+                f.write(f"{rel_path}\n")
+        print(f"Wrote playlist file: {playlist_path}")
+    except OSError as exc:
+        print(f"Failed to write playlist.m3u: {exc}")
+
+
+def download_playlist_tracks(playlist, known_hashes, base_output_folder):
+    playlist_name = sanitize_filename(playlist.get("name", "Unknown Playlist"))
+    playlists_root = os.path.join(base_output_folder, "Playlists")
+    os.makedirs(playlists_root, exist_ok=True)
+    playlist_folder = unique_folder_path(playlists_root, playlist_name)
+    os.makedirs(playlist_folder, exist_ok=True)
+    debug(f"Playlist folder: {playlist_folder}")
+
+    images = playlist.get("images") or []
+    if images:
+        chosen_image = images[-2] if len(images) >= 2 else images[0]
+        image_path = os.path.join(playlist_folder, "cover.jpg")
+        download_image(chosen_image.get("url", ""), image_path)
+        print(f"Downloaded playlist art for {playlist_name}")
+
+    tracks = get_playlist_tracks(playlist.get("id"))
+    if not tracks:
+        print(f"No tracks found for playlist: {playlist_name}")
+        return
+    debug(f"Track count for playlist '{playlist_name}': {len(tracks)}")
+
+    playlist_entries = []
+    for index, track in enumerate(tracks, start=1):
+        track_name = (track.get("name") or "").strip()
+        if not track_name:
+            continue
+        if is_instrumental_text(track_name):
+            print(f"Skipping instrumental track: {track_name}")
+            continue
+
+        artist_name_display = resolve_artist_display(track, "Unknown Artist")
+        search_query = (
+            f"{artist_name_display} - {track_name}"
+            if artist_name_display else track_name
+        )
+        artist_safe = sanitize_filename(artist_name_display) if artist_name_display else "Unknown"
+        track_safe = sanitize_filename(track_name)
+        base_name = f"{index:03d} - {artist_safe} - {track_safe}"
+        out_base = unique_base_path(os.path.join(playlist_folder, base_name))
+
+        print(f"Downloading playlist track: {track_name}")
+        downloaded_path = download_audio(search_query, out_base, known_hashes)
+        if not downloaded_path:
+            continue
+        rel_path = os.path.relpath(downloaded_path, playlist_folder).replace("\\", "/")
+        playlist_entries.append((f"{artist_name_display} - {track_name}", rel_path))
+
+    write_playlist_m3u(playlist_folder, playlist_entries)
+
+
+def download_playlists_from_list(entries, known_hashes, base_output_folder):
+    for entry in entries:
+        playlist_name, owner_name = parse_playlist_entry(entry)
+        if not playlist_name:
+            continue
+
+        playlist_id = extract_spotify_playlist_id(playlist_name)
+        if playlist_id:
+            playlist = get_playlist_by_id(playlist_id)
+            if not playlist:
+                continue
+            if owner_name and not playlist_has_owner(playlist, owner_name):
+                print(
+                    f"Playlist ID '{playlist_id}' does not match owner '{owner_name}'"
+                )
+                continue
+        else:
+            playlist = get_playlist_by_name(playlist_name, owner_name)
+        if not playlist:
+            continue
+
+        print(f"Downloading playlist: {playlist.get('name', playlist_name)}")
+        download_playlist_tracks(playlist, known_hashes, base_output_folder)
 
 
 def resolve_artist_display(item, fallback):
@@ -792,15 +998,20 @@ def group_songs_into_artist_folders(downloaded, base_output_folder):
 
 def resolve_input_file():
     if os.path.exists(SONGS_FILE):
-        if os.path.exists(ALBUMS_FILE) or os.path.exists(ARTISTS_FILE):
+        if os.path.exists(ALBUMS_FILE) or os.path.exists(PLAYLISTS_FILE) or os.path.exists(ARTISTS_FILE):
             print("Multiple input files found. Using songs.txt.")
         debug(f"Resolved input file: {SONGS_FILE}")
         return "songs", SONGS_FILE
     if os.path.exists(ALBUMS_FILE):
-        if os.path.exists(ARTISTS_FILE):
-            print("Both album.txt and artist.txt found. Using album.txt.")
+        if os.path.exists(PLAYLISTS_FILE) or os.path.exists(ARTISTS_FILE):
+            print("Multiple input files found. Using album.txt.")
         debug(f"Resolved input file: {ALBUMS_FILE}")
         return "albums", ALBUMS_FILE
+    if os.path.exists(PLAYLISTS_FILE):
+        if os.path.exists(ARTISTS_FILE):
+            print("Both playlist.txt and artist.txt found. Using playlist.txt.")
+        debug(f"Resolved input file: {PLAYLISTS_FILE}")
+        return "playlists", PLAYLISTS_FILE
     if os.path.exists(ARTISTS_FILE):
         debug(f"Resolved input file: {ARTISTS_FILE}")
         return "artists", ARTISTS_FILE
@@ -815,7 +1026,7 @@ def main():
     set_hash_cache_state(base_output_folder, cache_path, cache_entries)
     mode, input_path = resolve_input_file()
     if not input_path:
-        print("No songs.txt or artist.txt found in the script folder.")
+        print("No songs.txt, album.txt, playlist.txt, or artist.txt found in the script folder.")
         return
 
     if mode == "songs":
@@ -832,6 +1043,13 @@ def main():
             print("album.txt is empty or could not be parsed.")
             return
         download_albums_from_list(entries, known_hashes, base_output_folder)
+        return
+    if mode == "playlists":
+        entries = parse_list_file(input_path, allow_commas_in_items=True)
+        if not entries:
+            print("playlist.txt is empty or could not be parsed.")
+            return
+        download_playlists_from_list(entries, known_hashes, base_output_folder)
         return
 
     artists = parse_list_file(input_path, allow_commas_in_items=False)
