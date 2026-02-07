@@ -52,9 +52,15 @@ Place **one** of these files next to `song_retriever.py`:
 [
   "Blinding Lights, The Weeknd",
   "bad guy, Billie Eilish",
-  "Halo, Beyoncé"
+  "Halo, Beyoncé",
+  "3n3Ppam7vgaVa1iaRUc9Lp",
+  "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp",
+  "https://open.spotify.com/track/3n3Ppam7vgaVa1iaRUc9Lp"
 ]
 ```
+
+You can use a song name, Spotify track ID, Spotify URI, or Spotify track URL.
+If an artist is provided with a song name or ID, the script validates that the song includes that artist.
 
 ### album.txt
 ```txt
@@ -76,9 +82,14 @@ If an artist is provided with an album name or ID, the script validates that the
 [
   "The Weeknd",
   "Daft Punk",
-  "Beyoncé"
+  "Beyoncé",
+  "1Xyo4u8uXC1ZmMpatF05PJ",
+  "spotify:artist:1Xyo4u8uXC1ZmMpatF05PJ",
+  "https://open.spotify.com/artist/1Xyo4u8uXC1ZmMpatF05PJ"
 ]
 ```
+
+You can use an artist name, Spotify artist ID, Spotify URI, or Spotify artist URL.
 
 ## Run
 

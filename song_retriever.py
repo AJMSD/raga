@@ -56,6 +56,7 @@ INSTRUMENTAL_KEYWORDS = [
     "backing track",
     "no vocals",
 ]
+SPOTIFY_ID_REGEX = r"[A-Za-z0-9]{22}"
 
 
 def debug(message):
@@ -102,6 +103,29 @@ def strip_quotes(text):
     ):
         return text[1:-1].strip()
     return text
+
+
+def extract_spotify_id(text, entity_type):
+    value = (text or "").strip()
+    if not value:
+        return ""
+
+    prefix = f"spotify:{entity_type}:"
+    if value.lower().startswith(prefix):
+        value = value[len(prefix):]
+    else:
+        match = re.search(
+            rf"open\.spotify\.com/{entity_type}/({SPOTIFY_ID_REGEX})",
+            value,
+            re.IGNORECASE,
+        )
+        if match:
+            value = match.group(1)
+
+    value = value.split("?", 1)[0].split("/", 1)[0].strip()
+    if re.fullmatch(SPOTIFY_ID_REGEX, value):
+        return value
+    return ""
 
 
 def parse_list_file(path, allow_commas_in_items):
@@ -395,13 +419,22 @@ def download_audio(search_query, out_base_path, known_hashes):
 
 
 def get_artist(artist_name):
-    results = spotify_call(sp.search, q=f"artist:{artist_name}", type="artist", limit=1)
+    artist_key = (artist_name or "").strip()
+    artist_id = extract_spotify_artist_id(artist_key)
+    if artist_id:
+        artist = spotify_call(sp.artist, artist_id)
+        if not artist:
+            print(f"No artist found for artist ID '{artist_id}'")
+            return None
+        return artist
+
+    results = spotify_call(sp.search, q=f"artist:{artist_key}", type="artist", limit=1)
     if not results:
-        print(f"Spotify search failed for artist '{artist_name}'")
+        print(f"Spotify search failed for artist '{artist_key}'")
         return None
     items = results.get("artists", {}).get("items", [])
     if not items:
-        print(f"No artist found for '{artist_name}'")
+        print(f"No artist found for '{artist_key}'")
         return None
     return items[0]
 
@@ -538,27 +571,39 @@ def parse_album_entry(entry):
     return entry, ""
 
 
+def extract_spotify_track_id(text):
+    return extract_spotify_id(text, "track")
+
+
 def extract_spotify_album_id(text):
-    value = (text or "").strip()
-    if not value:
-        return ""
+    return extract_spotify_id(text, "album")
 
-    match = re.search(r"open\.spotify\.com/album/([A-Za-z0-9]+)", value, re.IGNORECASE)
-    if match:
-        value = match.group(1)
-    elif value.lower().startswith("spotify:album:"):
-        value = value.split(":", 2)[2]
 
-    value = value.split("?", 1)[0].split("/", 1)[0].strip()
-    if re.fullmatch(r"[A-Za-z0-9]{22}", value):
-        return value
-    return ""
+def extract_spotify_artist_id(text):
+    return extract_spotify_id(text, "artist")
 
 
 def album_has_artist(album, artist_name):
     if not artist_name:
         return True
     artists = album.get("artists") or []
+    target = normalize_name(artist_name)
+    if not target:
+        return True
+    for artist in artists:
+        name = artist.get("name", "")
+        if not name:
+            continue
+        candidate = normalize_name(name)
+        if candidate == target or target in candidate:
+            return True
+    return False
+
+
+def track_has_artist(track, artist_name):
+    if not artist_name:
+        return True
+    artists = track.get("artists") or []
     target = normalize_name(artist_name)
     if not target:
         return True
@@ -621,8 +666,16 @@ def get_album_by_id(album_id):
     return album
 
 
-def album_artist_display(album, fallback):
-    artists = album.get("artists") or []
+def get_track_by_id(track_id):
+    track = spotify_call(sp.track, track_id)
+    if not track:
+        print(f"No track found for track ID '{track_id}'")
+        return None
+    return track
+
+
+def resolve_artist_display(item, fallback):
+    artists = item.get("artists") or []
     if artists:
         names = [artist.get("name", "").strip() for artist in artists if artist.get("name")]
         if names:
@@ -652,9 +705,9 @@ def download_albums_from_list(entries, known_hashes, base_output_folder):
         if not album:
             continue
 
-        artist_display = album_artist_display(album, artist_name)
+        artist_name_display = resolve_artist_display(album, artist_name)
         print(f"Downloading album: {album.get('name', album_name)}")
-        download_album_tracks(artist_display, album, known_hashes, base_output_folder)
+        download_album_tracks(artist_name_display, album, known_hashes, base_output_folder)
 
 
 def download_songs_from_list(entries, known_hashes, base_output_folder):
@@ -663,24 +716,40 @@ def download_songs_from_list(entries, known_hashes, base_output_folder):
         song_name, artist_name = parse_song_entry(entry)
         if not song_name:
             continue
-        if is_instrumental_text(song_name):
-            print(f"Skipping instrumental song entry: {song_name}")
+        track_id = extract_spotify_track_id(song_name)
+        resolved_song_name = song_name
+        if track_id:
+            track = get_track_by_id(track_id)
+            if not track:
+                continue
+            if artist_name and not track_has_artist(track, artist_name):
+                print(f"Track ID '{track_id}' does not match artist '{artist_name}'")
+                continue
+            resolved_song_name = track.get("name", "").strip() or song_name
+            artist_name_display = resolve_artist_display(track, artist_name)
+        else:
+            artist_name_display = artist_name.strip() if artist_name else ""
+
+        if is_instrumental_text(resolved_song_name):
+            print(f"Skipping instrumental song entry: {resolved_song_name}")
             continue
 
-        artist_display = artist_name.strip() if artist_name else ""
         search_query = (
-            f"{artist_display} - {song_name}" if artist_display else song_name
+            f"{artist_name_display} - {resolved_song_name}"
+            if artist_name_display else resolved_song_name
         )
 
-        artist_safe = sanitize_filename(artist_display) if artist_display else "Unknown"
-        song_safe = sanitize_filename(song_name)
-        base_filename = f"{artist_safe} - {song_safe}" if artist_display else song_safe
+        artist_safe = sanitize_filename(artist_name_display) if artist_name_display else "Unknown"
+        song_safe = sanitize_filename(resolved_song_name)
+        base_filename = (
+            f"{artist_safe} - {song_safe}" if artist_name_display else song_safe
+        )
         out_base = unique_base_path(os.path.join(base_output_folder, base_filename))
 
-        print(f"Downloading song: {song_name}")
+        print(f"Downloading song: {resolved_song_name}")
         downloaded_path = download_audio(search_query, out_base, known_hashes)
         if downloaded_path:
-            downloaded.append((artist_display, downloaded_path))
+            downloaded.append((artist_name_display, downloaded_path))
 
     return downloaded
 
